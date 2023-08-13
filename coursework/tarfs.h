@@ -4,10 +4,13 @@
  */
 
 /*
- * STUDENT NUMBER: s
+ * STUDENT NUMBER: s1894401
  */
 #ifndef TARFS_H
 #define TARFS_H
+#define MAX_NAME 100
+#define MAX_SIZE 12
+#define BLOCK_SIZE 512
 
 #include <infos/fs/block-based-filesystem.h>
 #include <infos/fs/pfs-node.h>
@@ -32,7 +35,8 @@ namespace tarfs {
 		friend class TarFSFile;
 
 	public:
-
+		typedef infos::util::Map<infos::util::String::hash_type, TarFSNode *> TarFSNodeMap;
+		
 		TarFS(infos::drivers::block::BlockDevice& bdev) : BlockBasedFilesystem(bdev), _root_node(NULL) {
 		}
 
@@ -41,7 +45,19 @@ namespace tarfs {
 		const infos::util::String name() const {
 			return "tarfs";
 		}
-
+		
+		/* Returns the name of the file using the name
+		field of the specified buffer */
+		static char* file_name(uint8_t *buffer);
+		
+		/* Returns the size (in bytes) of the file using 
+		data from the size field of the specified buffer */
+		static unsigned int file_size(uint8_t *buffer);
+		
+		/*Returns the block offset of the header of the next node after
+		the specified node */
+		static unsigned int next_header(uint8_t *buffer);
+		
 	private:
 		TarFSNode *build_tree();
 		

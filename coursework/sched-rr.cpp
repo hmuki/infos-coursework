@@ -4,7 +4,7 @@
  */
 
 /*
- * STUDENT NUMBER: s
+ * STUDENT NUMBER: s1894401
  */
 #include <infos/kernel/sched.h>
 #include <infos/kernel/thread.h>
@@ -32,7 +32,10 @@ public:
 	 */
 	void add_to_runqueue(SchedulingEntity& entity) override
 	{
-		not_implemented();
+		// disabling interrupts
+		UniqueIRQLock l;
+		
+		runqueue.enqueue(&entity);
 	}
 
 	/**
@@ -41,7 +44,10 @@ public:
 	 */
 	void remove_from_runqueue(SchedulingEntity& entity) override
 	{
-		not_implemented();
+		// disabling interrupts
+		UniqueIRQLock l;
+		
+		runqueue.remove(&entity);
 	}
 
 	/**
@@ -51,7 +57,25 @@ public:
 	 */
 	SchedulingEntity *pick_next_entity() override
 	{
-		not_implemented();
+		// disabling interrupts
+		UniqueIRQLock l;
+		
+		// return nothing if queue is empty
+		if (runqueue.count() == 0) {
+			return NULL;
+		}
+		// pick first task if only one task is present
+		if (runqueue.count() == 1) {
+			return runqueue.first();
+		}
+		
+		// remove the task at the front of the queue...
+		auto entity = runqueue.dequeue();
+		// and add it to the back of the queue
+		runqueue.enqueue(entity);
+		
+		return entity;
+		
 	}
 
 private:

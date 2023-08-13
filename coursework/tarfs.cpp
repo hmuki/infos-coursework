@@ -4,10 +4,11 @@
  */
 
 /*
- * STUDENT NUMBER: s
+ * STUDENT NUMBER: s1894401
  */
 #include "tarfs.h"
 #include <infos/kernel/log.h>
+#define BLOCK_SIZE 512
 
 using namespace infos::fs;
 using namespace infos::drivers;
@@ -61,9 +62,53 @@ static inline unsigned int octal2ui(const char *data)
 namespace tarfs {
 	struct posix_header {
 		// TO BE FILLED IN
+		char name[100];
+		char mode[8];
+		char uid[8];
+		char grid[8];
+		char size[12];
+		char mtime[12];
+		char chksum[8];
+		char typeflag;
+		char linkname[100];
+		char magic[6];
+		char version[12];
+		char uname[32];
+		char gname[32];
+		char devmajor[8];
+		char devminor[8];
+		char prefix[167];
 	} __packed;
 }
 
+
+char* TarFS::file_name(uint8_t *buffer) {
+	char *name = new char[MAX_NAME + 1]; 
+	for (int i = 0; i < MAX_NAME; i++) {
+		name[i] = (char)buffer[i];
+	}
+	name[MAX_NAME] = '\0';
+	return name;
+}
+
+unsigned int TarFS::file_size(uint8_t *buffer) {
+	char *size = new char[MAX_SIZE + 1];
+	for (int i = 0; i < MAX_SIZE; i++) {
+		size[i] = (char)buffer[124 + i];
+	}
+	size[MAX_SIZE] = '\0';
+	return octal2ui(size);
+}
+
+unsigned int TarFS::next_header(uint8_t *buffer) {
+	unsigned int size = file_size(buffer);
+	// move to next block if file is empty
+	if (size % BLOCK_SIZE == 0) {
+		return ((size/BLOCK_SIZE) + 1);
+	}
+	return ((size/BLOCK_SIZE) + 2);
+}
+		
 /**
  * Reads the contents of the file into the buffer, from the specified file offset.
  * @param buffer The buffer to read the data into.
@@ -74,14 +119,30 @@ namespace tarfs {
 int TarFSFile::pread(void* buffer, size_t size, off_t off)
 {
 	if (off >= this->size()) return 0;
-
-	// TO BE FILLED IN
 	
 	// buffer is a pointer to the buffer that should receive the data.
 	// size is the amount of data to read from the file.
 	// off is the zero-based offset within the file to start reading from.
 	
-	return 0;
+	unsigned int nbytes = 0; // number of bytes read from the file
+	const int block_size = _owner.block_device().block_size();
+	char file_buffer[block_size]; // temporary store for data read from the buffer
+	
+	while (nbytes < size) {
+		unsigned int j = off/block_size;
+		unsigned int remainder = off % block_size;
+		if (!_owner.block_device().read_blocks(file_buffer, _file_start_block + j, 1)) { 
+			break; 
+		}
+		// get the number of bytes to copy from file_buffer
+		size_t dist = __min(BLOCK_SIZE - remainder, size - nbytes);
+		// Cast pointers to the required argument types for memcpy and copy specified number of bytes
+		memcpy((void *)((uintptr_t)buffer + nbytes), (void *)((uintptr_t)file_buffer + (uintptr_t)remainder), dist);
+		nbytes += dist;
+		off += dist;
+	}
+	
+	return nbytes;
 }
 
 /**
@@ -90,14 +151,85 @@ int TarFSFile::pread(void* buffer, size_t size, off_t off)
  * @return Returns the root TarFSNode that corresponds to the TAR file structure.
  */
 TarFSNode* TarFS::build_tree()
-{
+{	
+	// Create map to keep track of the nodes
+	// that have been created so far
+	TarFSNodeMap node_map;
+		
 	// Create the root node.
 	TarFSNode *root = new TarFSNode(NULL, "", *this);
-
-	// TO BE FILLED IN
 	
-	// You must read the TAR file, and build a tree of TarFSNodes that represents each file present in the archive.
-
+	// add root node to map
+	node_map.add(String("").get_hash(), root); 
+	
+	auto block_count = block_device().block_count();
+	
+	// syslog.messagef(LogLevel::DEBUG, "block_count : %lu", block_count);
+	
+	// read the entire TAR file
+	uint8_t *buffer = new uint8_t[BLOCK_SIZE];
+	block_device().read_blocks(buffer, 0, 1);
+	
+	unsigned int i = 0;
+	
+	while (i < block_count-2) {	
+		
+		// syslog.messagef(LogLevel::DEBUG, "Value of i is %u", i);
+		
+		if (is_zero_block(buffer)) {
+			i += 1;
+			block_device().read_blocks(buffer, i, 1);
+			continue;
+		}
+		
+		// use the file name to get the full file path
+		char *name = file_name(buffer);
+		syslog.messagef(LogLevel::DEBUG, "File is : %s", name);
+		
+		assert(strlen(name) != 0);
+		
+		List<String> parts = String(name).split('/', false);
+		List<String> components;
+		String path = "";
+		
+		for (unsigned int j = 0; j < parts.count(); j++) {
+			if (j == 0) {
+				path = parts.at(j);
+				components.append(path);
+			} else {
+				path = path + "/" + parts.at(j);
+				components.append(path);
+			}
+		}
+		
+		for (unsigned int j = 0; j < components.count(); j++) {
+			// if component node is not in map, add it
+			if (!node_map.contains_key(components.at(j).get_hash())) {
+				TarFSNode *child = nullptr;
+				if (j == 0) {
+					child = new TarFSNode(root, components.at(j), *this);
+					child->set_block_offset(i); // specify block offset of the node's header
+					child->size(file_size(buffer)); // specify file size of this node
+					root->add_child(components.at(j), child);
+				} else {
+					TarFSNode *node = nullptr;
+					// get the parent from the map using its name
+					node_map.try_get_value(components.at(j-1).get_hash(), node);
+					// add child to parent node
+					child = new TarFSNode(node, components.at(j), *this);
+					child->set_block_offset(i); // specify block offset of the node's header
+					child->size(file_size(buffer)); // specify file size of this node
+					node->add_child(components.at(j), child);
+				}
+				node_map.add(components.at(j).get_hash(), child);
+			}
+		}
+			
+		i += next_header(buffer);
+		block_device().read_blocks(buffer, i, 1);		
+	}
+	
+	delete buffer;
 	return root;
 }
 
@@ -106,8 +238,8 @@ TarFSNode* TarFS::build_tree()
  */
 unsigned int TarFSFile::size() const
 {
-	// TO BE FILLED IN
-	return 0;
+	syslog.messagef(LogLevel::DEBUG, "The value of size is %u", octal2ui(_hdr->size));
+	return octal2ui(_hdr->size);
 }
 
 /* --- YOU DO NOT NEED TO CHANGE ANYTHING BELOW THIS LINE --- */
